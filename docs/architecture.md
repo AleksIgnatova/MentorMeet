@@ -35,7 +35,8 @@ backend/src/
 │   └── rate-limit.ts      express-rate-limit wrapper that emits HttpError(429)
 └── modules/
     ├── health/            GET /api/health
-    └── slots/             /api/slots: routes, controller, service, schemas, types
+    ├── slots/             /api/slots: routes, controller, service, schemas, types
+    └── bookings/          /api/bookings: routes, controller, service, schemas, types
 ```
 
 Feature modules (`slots`, `bookings`, `ai`) will each follow
@@ -48,7 +49,8 @@ with Zod schemas in `*.schemas.ts`.
 2. `express.json({ limit: '10kb' })`
 3. `/api/health`: mounted **before** the rate limiter so uptime probes are never throttled.
 4. `/api` rate limiter: 300 requests / 15 min per IP by default. Stricter per-route limiters for booking and AI endpoints come in later phases.
-5. Feature routers: `/api/slots` (bookings and AI in later phases).
+5. Feature routers: `/api/slots`, `/api/bookings`. `POST /api/bookings` has its
+   own stricter rate limiter (20 / 15 min / IP). The AI router comes in a later phase.
 6. `notFoundHandler` → `ROUTE_NOT_FOUND`.
 7. `createErrorHandler`.
 
@@ -178,7 +180,8 @@ WHERE (status <> 'CANCELLED')
 Constraint violations surface as `PrismaClientKnownRequestError`. With the adapter,
 the PostgreSQL SQLSTATE is at `error.meta.driverAdapterError.cause.originalCode`:
 `23505` unique (Prisma `P2002`), `23503` FK (`P2003`), `23514` CHECK and `23P01`
-exclusion (both Prisma `P2039`). The Slots API maps `23P01` and `23503` to 409; Phase 4 will map `23505`.
+exclusion (both Prisma `P2039`). The Slots API maps `23P01` and `23503` to 409.
+The Bookings API maps `23505` on `bookings_time_slot_id_key` to 409.
 **`meta` contains full row data, including emails, so it must never be logged or
 returned to clients.**
 
@@ -258,9 +261,93 @@ the plan was open:
   `meta` contains an email and asserts that neither the log nor the response
   contains it.
 
+## Bookings API (Phase 4)
+
+The API contract is in [api.md](api.md). **No authentication, by design:** the
+project brief states that user authentication isn't required, so all booking
+routes are public and there is no auth middleware. The README documents what that
+exposes.
+
+### Atomic booking: how double bookings are prevented
+`bookings.service.ts` follows the plan step by step, in one Prisma interactive
+transaction (PostgreSQL default isolation, READ COMMITTED):
+
+```sql
+-- 1-2. Claim the slot only if it is still bookable
+--      (Prisma updateMany; updated_at is set by Prisma's @updatedAt)
+UPDATE time_slots SET status = 'BOOKED', updated_at = $now
+WHERE id = $slot AND status = 'AVAILABLE' AND start_time > $now;
+-- 3.   exactly 1 row?  0 -> look up why: 404 SLOT_NOT_FOUND, 409 SLOT_ALREADY_BOOKED,
+--      or 409 SLOT_NOT_AVAILABLE (started or cancelled). Throwing rolls back.
+-- 4.   INSERT INTO bookings (...)            -- same transaction
+-- 5.   any failure -> ROLLBACK, the slot goes back to AVAILABLE
+```
+
+**Why this is safe under concurrency.** The `UPDATE` takes a row lock on the slot.
+A concurrent request for the same slot blocks on that lock. Once the first
+transaction commits, PostgreSQL re-evaluates the second request's `WHERE` against
+the committed row: `status` is now `BOOKED`, so 0 rows match and the request gets
+409. If the first transaction rolls back, the waiting request proceeds and
+succeeds. There's no "check, then write" gap anywhere. READ COMMITTED is enough
+because the decision is made by the locking `UPDATE` itself, so `SERIALIZABLE`
+and retries aren't needed.
+
+**Defence in depth.** `UNIQUE(bookings.time_slot_id)` independently guarantees one
+booking per slot. If it fires (`23505` on `bookings_time_slot_id_key`), the
+transaction rolls back and the request gets 409 `SLOT_ALREADY_BOOKED`. Other
+unique violations (e.g. an astronomically unlikely token collision) are not
+disguised as 409: they roll back and return 500.
+
+**Transaction time limits.** Prisma's interactive-transaction defaults apply: 2 s to
+acquire a connection and 5 s to run. Under extreme contention a request that hits
+either limit is rolled back and gets a 500, not a 409. Integrity is unaffected
+(nothing is committed), but a client would see an error rather than "slot taken".
+At this app's scale, transactions take milliseconds.
+
+**Interaction with `DELETE /api/slots/:id`.** The delete's `WHERE status =
+'AVAILABLE'` and the booking's `UPDATE` serialize on the same row lock. The
+booking's `INSERT` also takes a key-share lock on the slot through the FK. So a
+race always ends either as "deleted, then the booking gets 404" or as "booked, then
+the delete gets 409".
+
+### Tokens and data exposure
+- `confirmationToken = randomBytes(32).toString('base64url')`: 256 bits, 43
+  characters, generated only on the server. The DB `CHECK` requires at least 32
+  characters, and the column is `UNIQUE`.
+- `GET /api/bookings/:token` returns only name, status and session times. Unknown
+  and malformed tokens both return 404 (malformed tokens never reach the database),
+  and the internal booking id never works as a token.
+- `POST /api/bookings` returns the token once and doesn't echo the email.
+  `GET /api/bookings` (host) includes emails but never tokens.
+- Token and host-list responses send `Cache-Control: no-store`.
+- Logs never contain names, emails or tokens: errors are logged through
+  `describeErrorForLog`, which a test verifies on the rollback path.
+
+### Testing strategy for races
+`tests/bookings-concurrency.integration.test.ts` runs against the real test database:
+
+- **Parallel bursts:** 10 simultaneous requests for one slot give exactly one 201
+  and nine 409s, and the stored booking is the winner's. Also 4 slots × 6 requests
+  over 3 rounds, and simultaneous bookings of *different* slots (no false conflicts).
+- **Deterministic interleavings:** a raw `pg` transaction claims the slot and holds
+  the lock. The test waits until `pg_stat_activity` shows the API request blocked on
+  the lock, then commits (the API request must get 409) or rolls back (it must get
+  201). The same is done for a concurrent `DELETE`. This proves the waiting and
+  re-checking mechanism directly instead of relying on lucky timing.
+- **Booking vs. delete:** 10 rounds of a simultaneous `DELETE` and `POST`.
+- After every scenario, the invariant "slot `BOOKED` ⇔ booking exists" is checked in SQL.
+- **Rollback:** an injected colliding token makes the `INSERT` fail after the
+  `UPDATE`. The slot stays `AVAILABLE` and the response is a generic 500 with no
+  personal data logged.
+- **Sabotage check (done manually):**
+  - Removing `status = 'AVAILABLE'` from the `UPDATE` fails the test that isolates
+    that condition: a slot marked `BOOKED` with no booking row.
+  - Removing that condition *and* the unique-violation mapping fails 7 tests,
+    including the burst and interleaving tests.
+  - The concurrency suite passed 10 of 10 consecutive runs.
+
 ## Planned (later phases)
 
-- **Phase 4:** Atomic booking. A conditional `UPDATE … SET status = 'BOOKED',
-  updated_at = now() WHERE id = $1 AND status = 'AVAILABLE' AND start_time > now()`
-  plus `INSERT booking` in one transaction. A 0-row update or a unique violation
-  maps to 409.
+- **Phase 5:** React frontend (dashboard, booking page, confirmation page).
+- **Phase 6:** Gemini confirmation message with a timeout and fallback (backend only).
+- **Phases 7–8:** Final regression pass, E2E tests and deployment.

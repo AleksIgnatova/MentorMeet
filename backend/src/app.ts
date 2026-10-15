@@ -5,6 +5,8 @@ import type { PrismaClient } from './generated/prisma/client';
 import { createErrorHandler } from './middleware/error-handler';
 import { notFoundHandler } from './middleware/not-found';
 import { createRateLimiter, type RateLimitOptions } from './middleware/rate-limit';
+import { createBookingsRouter } from './modules/bookings/bookings.routes';
+import { createBookingsService } from './modules/bookings/bookings.service';
 import { healthRouter } from './modules/health/health.routes';
 import { createSlotsRouter } from './modules/slots/slots.routes';
 import { createSlotsService } from './modules/slots/slots.service';
@@ -12,13 +14,18 @@ import { createSlotsService } from './modules/slots/slots.service';
 export const JSON_BODY_LIMIT = '10kb';
 
 const DEFAULT_API_RATE_LIMIT: RateLimitOptions = { windowMs: 15 * 60 * 1000, limit: 300 };
+/** Stricter limit for creating bookings (public write endpoint), per IP. */
+const DEFAULT_BOOKING_RATE_LIMIT: RateLimitOptions = { windowMs: 15 * 60 * 1000, limit: 20 };
 
 export type CreateAppOptions = {
   /** Database client. Injected so tests can use the test database. */
   prisma: PrismaClient;
   apiRateLimit?: RateLimitOptions;
+  bookingRateLimit?: RateLimitOptions;
   /** Injectable clock for tests. */
   now?: () => Date;
+  /** Injectable confirmation-token source for tests. */
+  generateToken?: () => string;
 };
 
 /**
@@ -40,7 +47,14 @@ export function createApp(config: AppConfig, options: CreateAppOptions): Express
 
   app.use('/api', createRateLimiter(options.apiRateLimit ?? DEFAULT_API_RATE_LIMIT));
   app.use('/api/slots', createSlotsRouter(createSlotsService(options)));
-  // Bookings and AI routers are mounted here in later phases.
+  app.use(
+    '/api/bookings',
+    createBookingsRouter(
+      createBookingsService(options),
+      createRateLimiter(options.bookingRateLimit ?? DEFAULT_BOOKING_RATE_LIMIT),
+    ),
+  );
+  // The AI router is mounted here in a later phase.
 
   app.use(notFoundHandler);
   app.use(createErrorHandler({ exposeStack: config.nodeEnv === 'development' }));

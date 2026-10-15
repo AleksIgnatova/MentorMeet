@@ -3,9 +3,12 @@
 Base path: `/api`. All requests and responses use JSON. Only implemented endpoints
 are documented here; this file grows with each phase.
 
-> **Security notice (demo scope):** host operations (`POST /api/slots`,
-> `DELETE /api/slots/:id`) have **no authentication** yet. Do not expose this API
-> publicly as-is. See the README's known limitations.
+> **No authentication, by design.** The project brief explicitly states that user
+> authentication is not required, so every endpoint is public. That includes the
+> host operations (`POST /api/slots`, `DELETE /api/slots/:id`) and
+> `GET /api/bookings`, which returns visitors' names and emails. This is acceptable
+> for the interview/demo scope but **not** production-secure. See the README's
+> known limitations.
 
 ## Conventions
 
@@ -50,6 +53,9 @@ not on `message`.
 | 404 | `SLOT_NOT_FOUND` | Time slot does not exist |
 | 409 | `SLOT_OVERLAP` | New slot overlaps an existing non-cancelled slot |
 | 409 | `SLOT_HAS_BOOKING` | Slot cannot be deleted because it has a booking |
+| 409 | `SLOT_ALREADY_BOOKED` | Slot was booked by someone else (including a concurrent request) |
+| 409 | `SLOT_NOT_AVAILABLE` | Slot can't be booked: it has already started or was cancelled |
+| 404 | `BOOKING_NOT_FOUND` | No booking for this confirmation token (unknown or malformed) |
 | 409 | `CONFLICT` | Other state conflict |
 | 413 | `PAYLOAD_TOO_LARGE` | Body larger than 10 kB |
 | 429 | `RATE_LIMITED` | Too many requests. Rate-limit info is in the `RateLimit` / `RateLimit-Policy` headers. |
@@ -57,7 +63,8 @@ not on `message`.
 
 ### Rate limiting
 All `/api/*` routes except `/api/health` share a per-IP limit of 300 requests per
-15 minutes.
+15 minutes. `POST /api/bookings` additionally has a stricter per-IP limit of 20
+requests per 15 minutes.
 
 ### The slot object
 
@@ -147,3 +154,115 @@ delete happen in a single SQL statement, and the `bookings` foreign key
 | 400 | `VALIDATION_ERROR`: `id` is not a UUID |
 | 404 | `SLOT_NOT_FOUND` |
 | 409 | `SLOT_HAS_BOOKING`: the slot is booked |
+
+### `POST /api/bookings` (public)
+
+Books an available slot. Only one booking per slot can ever succeed, including
+under concurrent requests (see [architecture.md](architecture.md#bookings-api-phase-4)).
+
+**Request body**
+
+```json
+{ "timeSlotId": "8b71a61b-75ab-43b5-8e58-57ca97c8df38", "name": "Ana Petrova", "email": "ana@example.com" }
+```
+
+| Field | Rules |
+|---|---|
+| `timeSlotId` | Required. UUID of an existing slot. |
+| `name` | Required. Trimmed; 1–100 characters; no control characters (e.g. newlines). |
+| `email` | Required. Trimmed; a valid email address; at most 254 characters. |
+
+Any other field (e.g. `status`, `startTime`, `endTime`, `confirmationToken`) is
+rejected with 400. The session times always come from the stored slot.
+
+**201 Created**
+
+```json
+{
+  "data": {
+    "name": "Ana Petrova",
+    "status": "CONFIRMED",
+    "slot": {
+      "startTime": "2026-10-21T12:00:00.000Z",
+      "endTime": "2026-10-21T12:30:00.000Z",
+      "durationMinutes": 30
+    },
+    "confirmationToken": "Jx3…(43 characters)"
+  }
+}
+```
+
+Use `confirmationToken` for the confirmation page URL
+(`/booking/confirmation/:token`). It is a 256-bit random value, encoded as 43
+base64url characters. The response does not echo the email.
+
+| Status | Body |
+|---|---|
+| 201 Created | See above |
+| 400 | `VALIDATION_ERROR` |
+| 404 | `SLOT_NOT_FOUND` |
+| 409 | `SLOT_ALREADY_BOOKED`, or `SLOT_NOT_AVAILABLE` (already started or cancelled) |
+| 429 | `RATE_LIMITED` |
+
+### `GET /api/bookings/:token` (public)
+
+Data for the confirmation page. It returns only what the page shows: no email, no
+internal id and no token. Responses carry `Cache-Control: no-store`.
+
+**200 OK**
+
+```json
+{
+  "data": {
+    "name": "Ana Petrova",
+    "status": "CONFIRMED",
+    "slot": {
+      "startTime": "2026-10-21T12:00:00.000Z",
+      "endTime": "2026-10-21T12:30:00.000Z",
+      "durationMinutes": 30
+    }
+  }
+}
+```
+
+| Status | Body |
+|---|---|
+| 200 OK | See above |
+| 404 | `BOOKING_NOT_FOUND`, for both unknown and malformed tokens. A booking's internal id does not work as a token. |
+
+### `GET /api/bookings[?upcoming=true]` (host dashboard)
+
+Lists bookings ordered by session start. It contains personal data (name, email)
+but never confirmation tokens. Responses carry `Cache-Control: no-store`.
+
+| Parameter | Rules |
+|---|---|
+| `upcoming` | Optional, `true` or `false` (default `false`). With `true`, only bookings whose session has not ended yet. |
+
+**200 OK**
+
+```json
+{
+  "data": [
+    {
+      "id": "1f0c…",
+      "name": "Ana Petrova",
+      "email": "ana@example.com",
+      "status": "CONFIRMED",
+      "createdAt": "2026-10-15T14:02:11.120Z",
+      "slot": {
+        "id": "8b71a61b-75ab-43b5-8e58-57ca97c8df38",
+        "startTime": "2026-10-21T12:00:00.000Z",
+        "endTime": "2026-10-21T12:30:00.000Z",
+        "durationMinutes": 30,
+        "status": "BOOKED"
+      }
+    }
+  ]
+}
+```
+
+| Status | Body |
+|---|---|
+| 200 OK | See above (possibly an empty list) |
+| 400 | `VALIDATION_ERROR` (invalid `upcoming`) |

@@ -5,11 +5,11 @@ slots; visitors pick a free slot, enter their name and email, and receive a
 confirmation page. Bookings are stored in PostgreSQL, and a slot can never be
 booked twice.
 
-> **Status: Phase 3 of 8.** The backend foundation (Express + TypeScript, health
+> **Status: Phase 4 of 8.** The backend foundation (Express + TypeScript, health
 > endpoint, middleware, error handling), the database layer (Prisma schema,
-> migration with integrity constraints, seed) and the **Slots API** exist. The
-> bookings API, frontend and AI integration are not implemented yet. This README
-> only documents what exists.
+> migration with integrity constraints, seed), the **Slots API** and the
+> **Bookings API** (atomic, concurrency-safe booking) exist. The frontend and AI
+> integration are not implemented yet. This README only documents what exists.
 
 ## Tech stack (current)
 
@@ -129,15 +129,24 @@ Backend only (`backend/package.json`): `dev`, `build`, `start` (runs `dist/serve
 | `GET` | `/api/slots?from=YYYY-MM-DD&to=YYYY-MM-DD[&status=AVAILABLE]` | List slots in a date range |
 | `GET` | `/api/slots/:id` | Get one slot |
 | `DELETE` | `/api/slots/:id` | Delete an available slot (host) |
+| `POST` | `/api/bookings` | Book a slot (public) |
+| `GET` | `/api/bookings/:token` | Booking confirmation by token (public) |
+| `GET` | `/api/bookings[?upcoming=true]` | List bookings (host dashboard) |
 
 For request and response formats, validation rules and error codes, see
 [docs/api.md](docs/api.md).
 
 ## Known limitations (at this phase)
 
-- No bookings API, frontend or AI integration yet.
-- **Host endpoints have no authentication** (demo scope): anyone who can reach the API
-  can create and delete slots (`POST`/`DELETE /api/slots`). Protect them before any
-  real production use.
-- Deleting a slot is permanent (hard delete). The `CANCELLED` status is reserved for a
-  future cancellation feature.
+- No frontend or AI integration yet.
+- **No authentication, by design.** The project brief explicitly says user
+  authentication is not required, so there are no accounts, logins or tokens for the
+  host. As a result, **anyone who can reach the API can create and delete slots and
+  read the booking list, including visitors' names and emails**
+  (`GET /api/bookings`). This is acceptable for the interview/demo scope but is
+  **not production-secure**. A real deployment would need to protect the host
+  endpoints.
+- Deleting a slot is permanent (hard delete). Bookings cannot be cancelled yet.
+  `CANCELLED` statuses are reserved for that.
+- Confirmation tokens are stored as-is (unique, 256-bit random). Storing only a hash
+  would be a further hardening step.
