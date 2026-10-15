@@ -1,0 +1,34 @@
+# Local development database only. Credentials here are for local use and
+# must never be reused in any deployed environment.
+# Fixed project name so the volume name does not depend on the folder name.
+name: mentormeet
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: mentormeet-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mentormeet
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      # Bound to localhost only: not reachable from other machines on the network.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - mentormeet-pgdata:/var/lib/postgresql/data
+      # Creates the separate `mentormeet_test` database on first start.
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # TCP check (-h 127.0.0.1): during first-time init Postgres listens only on the
+      # Unix socket, so this stays unhealthy until the init scripts have finished.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d mentormeet"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  mentormeet-pgdata:

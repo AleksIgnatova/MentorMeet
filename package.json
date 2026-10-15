@@ -1,0 +1,19 @@
+{
+  "name": "mentormeet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MentorMeet: scheduling for one-to-one mentoring sessions.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "install:backend": "npm --prefix backend install",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
+    "dev:backend": "npm --prefix backend run dev",
+    "build": "npm --prefix backend run build",
+    "lint": "npm --prefix backend run lint",
+    "typecheck": "npm --prefix backend run typecheck",
+    "test": "npm --prefix backend test"
+  }
+}
