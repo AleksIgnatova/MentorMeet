@@ -2,7 +2,7 @@ import { createApp } from './app';
 import { env } from './config/env';
 import { prisma } from './lib/prisma';
 
-const app = createApp(env);
+const app = createApp(env, { prisma });
 
 const server = app.listen(env.port, () => {
   console.info(`[server] MentorMeet API listening on port ${env.port} (${env.nodeEnv})`);

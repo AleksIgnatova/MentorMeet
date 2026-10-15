@@ -3,16 +3,37 @@
 Base path: `/api`. All requests and responses use JSON. Only implemented endpoints
 are documented here; this file grows with each phase.
 
-## Error format
+> **Security notice (demo scope):** host operations (`POST /api/slots`,
+> `DELETE /api/slots/:id`) have **no authentication** yet. Do not expose this API
+> publicly as-is. See the README's known limitations.
 
-Every error response has this shape:
+## Conventions
+
+### Success responses
+Successful responses wrap the payload in `data`:
+
+```json
+{ "data": { "id": "…" } }
+```
+
+`204 No Content` responses have no body.
+
+### Times
+- Request instants are ISO 8601 date-times **with** an offset or `Z`
+  (e.g. `2026-10-21T14:00:00+02:00`). Times without a zone are rejected.
+- Response instants are ISO 8601 in UTC (e.g. `2026-10-21T12:00:00.000Z`). Clients
+  display them in `Europe/Skopje`.
+- Calendar dates in query strings (`YYYY-MM-DD`) are days in `Europe/Skopje`.
+- Slot intervals are half-open: `[startTime, endTime)`. Adjacent slots don't overlap.
+
+### Error format
 
 ```json
 {
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "Request validation failed.",
-    "details": [{ "path": "email", "message": "Invalid email address" }]
+    "details": [{ "path": "durationMinutes", "message": "durationMinutes must be one of 15, 30, 45, 60" }]
   }
 }
 ```
@@ -24,17 +45,34 @@ not on `message`.
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | Request data failed validation |
 | 400 | `INVALID_JSON` | Body is not valid JSON |
+| 400 | `SLOT_IN_PAST` | Slot start time is not in the future |
 | 404 | `ROUTE_NOT_FOUND` | No such route |
-| 404 | `NOT_FOUND` | Resource does not exist |
-| 409 | `CONFLICT` | State conflict (more specific codes will be added, e.g. `SLOT_ALREADY_BOOKED`) |
+| 404 | `SLOT_NOT_FOUND` | Time slot does not exist |
+| 409 | `SLOT_OVERLAP` | New slot overlaps an existing non-cancelled slot |
+| 409 | `SLOT_HAS_BOOKING` | Slot cannot be deleted because it has a booking |
+| 409 | `CONFLICT` | Other state conflict |
 | 413 | `PAYLOAD_TOO_LARGE` | Body larger than 10 kB |
 | 429 | `RATE_LIMITED` | Too many requests. Rate-limit info is in the `RateLimit` / `RateLimit-Policy` headers. |
 | 500 | `INTERNAL_ERROR` | Unexpected error. No internals are exposed outside development. |
 
-## Rate limiting
-
+### Rate limiting
 All `/api/*` routes except `/api/health` share a per-IP limit of 300 requests per
 15 minutes.
+
+### The slot object
+
+```json
+{
+  "id": "8b71a61b-75ab-43b5-8e58-57ca97c8df38",
+  "startTime": "2026-10-21T12:00:00.000Z",
+  "endTime": "2026-10-21T12:30:00.000Z",
+  "durationMinutes": 30,
+  "status": "AVAILABLE"
+}
+```
+
+`status` is `AVAILABLE`, `BOOKED` or `CANCELLED`. Nothing produces `CANCELLED` yet;
+it's reserved for a future cancellation feature.
 
 ## Endpoints
 
@@ -47,3 +85,65 @@ Liveness check. Not rate limited.
 ```json
 { "status": "ok", "timestamp": "2026-10-15T12:46:01.003Z" }
 ```
+
+### `POST /api/slots` (host)
+
+Creates an available time slot.
+
+**Request body**
+
+```json
+{ "startTime": "2026-10-21T14:00:00+02:00", "durationMinutes": 30 }
+```
+
+| Field | Rules |
+|---|---|
+| `startTime` | Required. ISO 8601 date-time with offset or `Z`; a real calendar date; strictly in the future. |
+| `durationMinutes` | Required. JSON number, one of `15`, `30`, `45`, `60`. |
+
+Any other field (e.g. `endTime`, `status`, `id`) is rejected with 400. The server
+computes `endTime = startTime + durationMinutes`.
+
+| Status | Body |
+|---|---|
+| 201 Created | `{ "data": <slot> }`, with a `Location: /api/slots/{id}` header |
+| 400 | `VALIDATION_ERROR` (invalid body), `SLOT_IN_PAST` |
+| 409 | `SLOT_OVERLAP`: overlaps a non-cancelled slot. Enforced by a PostgreSQL exclusion constraint, so it also holds for concurrent requests. |
+
+### `GET /api/slots?from=YYYY-MM-DD&to=YYYY-MM-DD[&status=AVAILABLE]`
+
+Lists slots whose **start** falls on the calendar days `from` through `to`
+(**inclusive**) in Europe/Skopje, ordered by start time.
+
+| Parameter | Rules |
+|---|---|
+| `from`, `to` | Required. Valid `YYYY-MM-DD` dates. `to` ≥ `from`. At most 93 days inclusive. |
+| `status` | Optional. Only `AVAILABLE` is supported. It returns only slots that are `AVAILABLE` **and have not started yet** (what the public booking page shows). Without it, all slots in the range are returned, whatever their status (host dashboard). |
+
+Other query parameters are ignored.
+
+| Status | Body |
+|---|---|
+| 200 OK | `{ "data": [<slot>, …] }` (possibly empty) |
+| 400 | `VALIDATION_ERROR` |
+
+### `GET /api/slots/:id`
+
+| Status | Body |
+|---|---|
+| 200 OK | `{ "data": <slot> }` |
+| 400 | `VALIDATION_ERROR`: `id` is not a UUID |
+| 404 | `SLOT_NOT_FOUND` |
+
+### `DELETE /api/slots/:id` (host)
+
+Permanently deletes a slot that is still `AVAILABLE`. The status check and the
+delete happen in a single SQL statement, and the `bookings` foreign key
+(`ON DELETE RESTRICT`) is a second safeguard.
+
+| Status | Body |
+|---|---|
+| 204 No Content | Deleted. Deleting it again returns 404. |
+| 400 | `VALIDATION_ERROR`: `id` is not a UUID |
+| 404 | `SLOT_NOT_FOUND` |
+| 409 | `SLOT_HAS_BOOKING`: the slot is booked |

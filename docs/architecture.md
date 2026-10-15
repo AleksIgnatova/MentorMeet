@@ -24,15 +24,18 @@ backend/src/
 ├── server.ts              Starts HTTP server, graceful shutdown on SIGTERM/SIGINT
 ├── config/env.ts          Zod-validated environment → frozen AppConfig
 ├── common/http-errors.ts  HttpError + stable ErrorCode values
+├── common/db-errors.ts    Reads the PostgreSQL SQLSTATE from Prisma errors
 ├── lib/prisma.ts          createPrismaClient(url) + shared `prisma` client
 ├── utils/date-time.ts     Europe/Skopje wall-clock <-> instant conversion (DST-safe)
+├── utils/api-response.ts  `{ data }` success envelope
 ├── generated/prisma/      Generated Prisma client (git-ignored, `prisma generate`)
 ├── middleware/
 │   ├── error-handler.ts   Central error → JSON mapping
 │   ├── not-found.ts       JSON 404 for unknown routes
 │   └── rate-limit.ts      express-rate-limit wrapper that emits HttpError(429)
 └── modules/
-    └── health/            GET /api/health
+    ├── health/            GET /api/health
+    └── slots/             /api/slots: routes, controller, service, schemas, types
 ```
 
 Feature modules (`slots`, `bookings`, `ai`) will each follow
@@ -45,7 +48,7 @@ with Zod schemas in `*.schemas.ts`.
 2. `express.json({ limit: '10kb' })`
 3. `/api/health`: mounted **before** the rate limiter so uptime probes are never throttled.
 4. `/api` rate limiter: 300 requests / 15 min per IP by default. Stricter per-route limiters for booking and AI endpoints come in later phases.
-5. Feature routers (later phases).
+5. Feature routers: `/api/slots` (bookings and AI in later phases).
 6. `notFoundHandler` → `ROUTE_NOT_FOUND`.
 7. `createErrorHandler`.
 
@@ -175,7 +178,7 @@ WHERE (status <> 'CANCELLED')
 Constraint violations surface as `PrismaClientKnownRequestError`. With the adapter,
 the PostgreSQL SQLSTATE is at `error.meta.driverAdapterError.cause.originalCode`:
 `23505` unique (Prisma `P2002`), `23503` FK (`P2003`), `23514` CHECK and `23P01`
-exclusion (both Prisma `P2039`). Phase 3/4 will map these to 409 responses.
+exclusion (both Prisma `P2039`). The Slots API maps `23P01` and `23503` to 409; Phase 4 will map `23505`.
 **`meta` contains full row data, including emails, so it must never be logged or
 returned to clients.**
 
@@ -205,10 +208,58 @@ personal data is seeded, and it refuses to run with `NODE_ENV=production`.
   with this Node flag. The `test*` scripts pass it (and silence its
   `ExperimentalWarning`). Running `npx jest` directly will fail the integration tests.
 
+## Slots API (Phase 3)
+
+The API contract is in [api.md](api.md). Decisions made with the project owner where
+the plan was open:
+
+- **DELETE is a hard delete** of an `AVAILABLE` slot. `CANCELLED` is reserved.
+- **One list endpoint with an optional filter.** `GET /api/slots?from&to` returns all
+  slots (dashboard). `&status=AVAILABLE` returns only bookable slots: `AVAILABLE`
+  and `start_time > now()` (public booking page). Filtering happens on the server,
+  so it doesn't depend on the browser clock.
+- **`from`/`to` are required, inclusive Europe/Skopje calendar days**, capped at 93
+  days. They become the half-open instant range [`from` 00:00, `to`+1 00:00) with
+  `zonedDayRange`, so DST days are 23 or 25 hours long and slots are never lost or
+  duplicated at the boundaries.
+- **Success responses use a `{ data }` envelope.**
+
+### Layering
+- **Routes** (`slots.routes.ts`) only wire HTTP verbs to the controller.
+- **Controller** (`slots.controller.ts`) is thin: `schema.parse(req.…)` →
+  service → response. A `ZodError` becomes 400 `VALIDATION_ERROR` in the central
+  error handler. Validation happens in the controller rather than in a generic
+  `validate-request` middleware, because Express 5's `req.query` is read-only and
+  parsing in place keeps the parsed values fully typed. The planned
+  `validate-request.ts` file was therefore not created.
+- **Service** (`slots.service.ts`) holds all business rules and is created by
+  `createSlotsService({ prisma, now })`. `createApp(config, { prisma, now })`
+  injects the client and clock, so tests run against the test database with a fixed
+  clock.
+
+### Business rules and where they are enforced
+| Rule | Enforced by |
+|---|---|
+| Duration ∈ {15, 30, 45, 60}; `startTime` has an explicit zone and is a real date | Zod schema |
+| `endTime`/`status`/`id` are not accepted from the client | Strict Zod object |
+| `endTime = startTime + duration` | Service (absolute minutes, DST-safe) |
+| Start strictly in the future | Service, checked against the injectable clock |
+| No overlap with non-cancelled slots, including concurrent requests | **DB exclusion constraint**. The service maps `23P01` to 409 `SLOT_OVERLAP` and doesn't pre-check in JavaScript, because a pre-check would add a race without adding safety. |
+| Only `AVAILABLE` slots can be deleted | `DELETE … WHERE id = $1 AND status = 'AVAILABLE'` (atomic); the FK `RESTRICT` (`23503`) maps to 409 `SLOT_HAS_BOOKING` |
+
+### Safe error handling
+- The Prisma client uses `errorFormat: 'minimal'`. The default format embeds a
+  source-code frame in error messages, which a probe showed can contain literal
+  values.
+- `common/db-errors.ts` reads only `meta.driverAdapterError.cause.originalCode`.
+  The rest of `meta` contains full rows (e.g. emails).
+- The error handler logs `describeErrorForLog(err)` (name, code, message, stack
+  frames), never the raw error object. A unit test feeds it a Prisma error whose
+  `meta` contains an email and asserts that neither the log nor the response
+  contains it.
+
 ## Planned (later phases)
 
-- **Phase 3:** Slots API. Duration and future-time validation, date-range queries in
-  Europe/Skopje, and mapping `23P01` to 409.
 - **Phase 4:** Atomic booking. A conditional `UPDATE … SET status = 'BOOKED',
   updated_at = now() WHERE id = $1 AND status = 'AVAILABLE' AND start_time > now()`
   plus `INSERT booking` in one transaction. A 0-row update or a unique violation

@@ -5,10 +5,11 @@ slots; visitors pick a free slot, enter their name and email, and receive a
 confirmation page. Bookings are stored in PostgreSQL, and a slot can never be
 booked twice.
 
-> **Status: Phase 2 of 8.** The backend foundation (Express + TypeScript, health
-> endpoint, middleware, error handling) and the database layer (Prisma schema,
-> migration with integrity constraints, seed) exist. The slot/booking APIs, frontend
-> and AI integration are not implemented yet. This README only documents what exists.
+> **Status: Phase 3 of 8.** The backend foundation (Express + TypeScript, health
+> endpoint, middleware, error handling), the database layer (Prisma schema,
+> migration with integrity constraints, seed) and the **Slots API** exist. The
+> bookings API, frontend and AI integration are not implemented yet. This README
+> only documents what exists.
 
 ## Tech stack (current)
 
@@ -121,11 +122,22 @@ Backend only (`backend/package.json`): `dev`, `build`, `start` (runs `dist/serve
 
 ## API
 
-Currently only `GET /api/health`. For the error format and status codes, see
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Liveness check |
+| `POST` | `/api/slots` | Create a slot (host) |
+| `GET` | `/api/slots?from=YYYY-MM-DD&to=YYYY-MM-DD[&status=AVAILABLE]` | List slots in a date range |
+| `GET` | `/api/slots/:id` | Get one slot |
+| `DELETE` | `/api/slots/:id` | Delete an available slot (host) |
+
+For request and response formats, validation rules and error codes, see
 [docs/api.md](docs/api.md).
 
 ## Known limitations (at this phase)
 
-- No slots/bookings API, frontend or AI integration yet.
-- Host endpoints will initially have **no authentication** (demo scope). This will be
-  documented and must be addressed before any real production use.
+- No bookings API, frontend or AI integration yet.
+- **Host endpoints have no authentication** (demo scope): anyone who can reach the API
+  can create and delete slots (`POST`/`DELETE /api/slots`). Protect them before any
+  real production use.
+- Deleting a slot is permanent (hard delete). The `CANCELLED` status is reserved for a
+  future cancellation feature.

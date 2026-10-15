@@ -9,6 +9,10 @@ export const ErrorCode = {
   NOT_FOUND: 'NOT_FOUND',
   ROUTE_NOT_FOUND: 'ROUTE_NOT_FOUND',
   CONFLICT: 'CONFLICT',
+  SLOT_NOT_FOUND: 'SLOT_NOT_FOUND',
+  SLOT_IN_PAST: 'SLOT_IN_PAST',
+  SLOT_OVERLAP: 'SLOT_OVERLAP',
+  SLOT_HAS_BOOKING: 'SLOT_HAS_BOOKING',
   RATE_LIMITED: 'RATE_LIMITED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 } as const;
@@ -42,8 +46,8 @@ export class HttpError extends Error {
 export const badRequest = (message: string, details?: ErrorDetail[]) =>
   new HttpError(400, ErrorCode.VALIDATION_ERROR, message, details);
 
-export const notFound = (message = 'Resource not found.') =>
-  new HttpError(404, ErrorCode.NOT_FOUND, message);
+export const notFound = (message = 'Resource not found.', code: ErrorCode = ErrorCode.NOT_FOUND) =>
+  new HttpError(404, code, message);
 
 export const conflict = (message: string, code: ErrorCode = ErrorCode.CONFLICT) =>
   new HttpError(409, code, message);

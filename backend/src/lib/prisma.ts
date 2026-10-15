@@ -13,7 +13,9 @@ export function createPrismaClient(databaseUrl: string): PrismaClient {
   url.searchParams.delete('schema');
 
   const adapter = new PrismaPg({ connectionString: url.toString() }, { schema });
-  return new PrismaClient({ adapter });
+  // 'minimal' keeps source-code frames (which can contain literal values) out of
+  // error messages. Error `meta` still holds row data and must never be logged.
+  return new PrismaClient({ adapter, errorFormat: 'minimal' });
 }
 
 /** Shared client for the application. The connection pool opens lazily on first query. */

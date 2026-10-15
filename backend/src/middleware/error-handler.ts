@@ -5,8 +5,20 @@ import { ErrorCode, HttpError, type ErrorResponseBody } from '../common/http-err
 type ErrorHandlerOptions = {
   /** Include stack traces in responses. Must be false in production. */
   exposeStack: boolean;
-  log?: (message: string, error: unknown) => void;
+  log?: (message: string, error: string) => void;
 };
+
+/**
+ * Reduces an error to name, code, message and stack for logging. The raw object
+ * is never logged: Prisma errors carry full database rows (e.g. emails) in `meta`.
+ */
+export function describeErrorForLog(err: unknown): string {
+  if (!(err instanceof Error)) return `Non-error value thrown (${typeof err})`;
+  const code = (err as { code?: unknown }).code;
+  const header = `${err.name}${typeof code === 'string' ? ` [${code}]` : ''}: ${err.message}`;
+  const frames = err.stack?.split('\n').filter((line) => line.trimStart().startsWith('at ')) ?? [];
+  return [header, ...frames].join('\n');
+}
 
 /** Errors raised by express.json() / body-parser carry a `type` and `status`. */
 function isBodyParserError(err: unknown): err is Error & { type: string; status: number } {
@@ -59,9 +71,9 @@ export function createErrorHandler({
       known ?? new HttpError(500, ErrorCode.INTERNAL_ERROR, 'An unexpected error occurred.');
 
     if (!known) {
-      // Log only the method and the error itself: URLs and bodies may contain
-      // personal data or confirmation tokens.
-      log(`[error] Unhandled error during ${req.method} request`, err);
+      // Log only the method and a sanitized error summary: URLs, bodies and
+      // Prisma error metadata may contain personal data or confirmation tokens.
+      log(`[error] Unhandled error during ${req.method} request`, describeErrorForLog(err));
     }
 
     const body: ErrorResponseBody = {
