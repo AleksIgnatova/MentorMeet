@@ -7,6 +7,9 @@ build/
 coverage/
 *.tsbuildinfo
 
+# Generated code (recreated by `prisma generate`)
+backend/src/generated/
+
 # Environment files (never commit real credentials)
 .env
 .env.*

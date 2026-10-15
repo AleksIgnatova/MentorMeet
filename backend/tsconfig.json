@@ -19,5 +19,5 @@
     "sourceMap": true,
     "types": ["node", "jest"]
   },
-  "include": ["src", "tests", "jest.config.mts"]
+  "include": ["src", "tests", "prisma", "prisma.config.ts", "jest.config.mts"]
 }

@@ -1,0 +1,71 @@
+// MentorMeet database schema.
+//
+// Constraints that Prisma cannot express are added by hand in the initial
+// migration (prisma/migrations/*_init/migration.sql):
+//   - time_slots_start_before_end   CHECK (start_time < end_time)
+//   - time_slots_no_overlap         EXCLUDE USING gist on tstzrange(start_time, end_time, '[)')
+//                                   for slots that are not CANCELLED
+//   - bookings_name_not_blank / bookings_email_not_blank / bookings_token_min_length
+// See docs/architecture.md for the reasoning.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TimeSlotStatus {
+  AVAILABLE
+  BOOKED
+  CANCELLED
+
+  @@map("time_slot_status")
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+
+  @@map("booking_status")
+}
+
+model TimeSlot {
+  id        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Stored as timestamptz (an absolute instant). Displayed in Europe/Skopje.
+  startTime DateTime       @map("start_time") @db.Timestamptz(3)
+  /// Computed by the backend from startTime + duration. Interval is half-open: [startTime, endTime).
+  endTime   DateTime       @map("end_time") @db.Timestamptz(3)
+  status    TimeSlotStatus @default(AVAILABLE)
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking Booking?
+
+  /// Public booking page: available slots in a date range.
+  @@index([status, startTime])
+  /// Host dashboard: all slots in a date range.
+  @@index([startTime])
+  @@map("time_slots")
+}
+
+model Booking {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// UNIQUE: a time slot can have at most one booking.
+  timeSlotId        String        @unique @map("time_slot_id") @db.Uuid
+  name              String        @db.VarChar(100)
+  email             String        @db.VarChar(254)
+  status            BookingStatus @default(CONFIRMED)
+  /// Cryptographically random, hard-to-guess token for the public confirmation page.
+  confirmationToken String        @unique @map("confirmation_token") @db.VarChar(128)
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  /// RESTRICT: a slot that has a booking cannot be deleted.
+  timeSlot TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@map("bookings")
+}
