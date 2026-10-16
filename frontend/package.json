@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:contract": "vitest run src/test/api-contract.test.ts"
+    "test:contract": "vitest run src/test/api-contract.test.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@date-fns/tz": "1.5.0",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/vite": "4.3.3",
     "@testing-library/dom": "10.4.2",
     "@testing-library/jest-dom": "7.0.1",

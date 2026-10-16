@@ -1,7 +1,7 @@
 # API
 
 Base path: `/api`. All requests and responses use JSON. Only implemented endpoints
-are documented here; this file grows with each phase.
+are documented here.
 
 > **No authentication, by design.** The project brief explicitly states that user
 > authentication is not required, so every endpoint is public. That includes the

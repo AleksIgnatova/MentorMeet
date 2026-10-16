@@ -11,7 +11,7 @@ React (Vite) ──HTTP/JSON──▶ Express API ──Prisma (pg adapter)─�
   frontend/                  backend/
 ```
 
-Monorepo with independent `backend/` and (later) `frontend/` packages, each with its
+Monorepo with independent `backend/` and `frontend/` packages, each with its
 own `package.json` and lockfile so they can be deployed separately (e.g. Render and
 Vercel). The root `package.json` only holds convenience scripts that delegate with
 `npm --prefix`; npm workspaces are deliberately not used, to keep per-package
@@ -215,6 +215,18 @@ personal data is seeded, and it refuses to run with `NODE_ENV=production`.
   query compiler with a dynamic `import()`, which Jest's CommonJS sandbox only allows
   with this Node flag. The `test*` scripts pass it (and silence its
   `ExperimentalWarning`). Running `npx jest` directly will fail the integration tests.
+- **Frontend tests** (Vitest + React Testing Library) mock only `fetch` and render the
+  real route table. See [Frontend tests](#frontend-tests).
+- **End-to-end tests (Phase 7)** use Playwright in `frontend/e2e/` (`*.e2e.ts`, so
+  Vitest does not pick them up). `playwright.config.ts` starts its own backend on the
+  test database and its own Vite server. It never reuses running servers, so E2E can
+  never hit the development database or a backend with a Gemini key. Before starting
+  the API it runs `prisma migrate deploy` against the test database. The tests create
+  their own slot through the API at a random future day and time, so they don't depend
+  on seed data or earlier runs. They cover the plan's E2E steps 1–8, two visitors
+  racing for one slot (UI conflict message), and navigation including the `/` redirect
+  and a refresh. By default they run in the installed Google Chrome
+  (`PLAYWRIGHT_CHANNEL`), so no browser download is needed.
 
 ## Slots API (Phase 3)
 
@@ -532,6 +544,6 @@ ai.routes (30/15 min limiter) → ai.controller (Zod: { token }) → ai.service
   400, the rate limit.
 - No test calls the real Gemini API. `tests/setup.ts` clears `GEMINI_API_KEY`.
 
-## Planned (later phases)
+## Planned
 
-- **Phases 7–8:** Final regression pass, E2E tests and deployment.
+- **Phase 8:** Deployment and a live smoke test (see the README's deployment notes).
