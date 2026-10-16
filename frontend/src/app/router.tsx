@@ -7,7 +7,8 @@ import { NotFoundPage } from '../features/NotFoundPage';
 import { BookingPage } from '../features/public-booking/BookingPage';
 
 export const routes: RouteObject[] = [
-  { path: '/', element: <Navigate to="/book" replace /> },
+  // The dashboard is the landing page; visitors reach /book and the confirmation page directly.
+  { path: '/', element: <Navigate to="/dashboard" replace /> },
   {
     element: <PublicLayout />,
     children: [

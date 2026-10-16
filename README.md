@@ -82,6 +82,7 @@ npm run dev:frontend
 ```
 
 Then open:
+- http://localhost:5173/: redirects to the host dashboard
 - http://localhost:5173/book: public booking page (visitors)
 - http://localhost:5173/dashboard: host dashboard
 - http://localhost:5173/booking/confirmation/:token: confirmation page (linked after booking)

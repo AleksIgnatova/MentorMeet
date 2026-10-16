@@ -67,6 +67,7 @@ export function BookingPage() {
   return (
     <>
       <PageHeader
+        back={{ to: '/dashboard', label: 'Back to Dashboard' }}
         title="Book a mentoring session"
         description="Pick a day and a free time, then enter your name and email. Times are in Europe/Skopje."
       />

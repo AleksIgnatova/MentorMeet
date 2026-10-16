@@ -369,7 +369,7 @@ frontend/src/
 │   ├── slots/             SlotList, CreateSlotDialog, DeleteSlotDialog
 │   ├── bookings/          BookingForm, UpcomingBookings
 │   ├── common/            LoadingState, ErrorState, EmptyState, ConfirmDialog
-│   └── ui/                Button, Field, Card, Alert, Badge, Dialog, Spinner
+│   └── ui/                Button, ButtonLink, Field, Card, Alert, Badge, Dialog, Spinner
 ├── lib/                   api-client, date-time, validation, error-messages, use-api-resource
 └── types/                 Slot / booking types mirroring the backend DTOs
 ```
@@ -377,7 +377,7 @@ frontend/src/
 ### Routes
 | Path | Page | API calls |
 |---|---|---|
-| `/` | Redirects to `/book` | |
+| `/` | Redirects to `/dashboard` (the landing page) | |
 | `/book` | Pick a day → free times → name/email form | `GET /slots?from=d&to=d&status=AVAILABLE`, `POST /bookings` |
 | `/booking/confirmation/:token` | Booking details + message | `GET /bookings/:token`, then `POST /ai/confirmation` |
 | `/dashboard` | Stats, 14-day slot list, create/delete slots, upcoming bookings | `GET /slots?from&to`, `POST /slots`, `DELETE /slots/:id`, `GET /bookings?upcoming=true` |

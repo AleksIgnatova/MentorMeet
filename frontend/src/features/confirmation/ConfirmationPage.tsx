@@ -1,6 +1,7 @@
-import { Link, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import { ErrorState } from '../../components/common/ErrorState';
 import { LoadingState } from '../../components/common/LoadingState';
+import { ButtonLink } from '../../components/ui/ButtonLink';
 import { Card } from '../../components/ui/Card';
 import { Spinner } from '../../components/ui/Spinner';
 import { isApiError } from '../../lib/api-client';
@@ -98,11 +99,13 @@ export function ConfirmationPage() {
 
       {booking.status === 'success' && <ConfirmationDetails token={token} booking={booking.data} />}
 
-      <p className="text-center text-sm">
-        <Link to="/book" className="font-medium text-brand-700 hover:text-brand-800">
-          Book another session
-        </Link>
-      </p>
+      {/* Shown in every state, so there is always a way on. Stacked full-width on phones. */}
+      <nav aria-label="Next steps" className="flex flex-col gap-3 sm:flex-row sm:justify-center">
+        <ButtonLink to="/book">Book another session</ButtonLink>
+        <ButtonLink to="/dashboard" variant="secondary">
+          Go to Dashboard
+        </ButtonLink>
+      </nav>
     </div>
   );
 }
