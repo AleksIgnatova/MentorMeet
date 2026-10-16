@@ -8,15 +8,19 @@
   },
   "scripts": {
     "install:backend": "npm --prefix backend install",
+    "install:frontend": "npm --prefix frontend install",
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down",
     "db:migrate": "npm --prefix backend run db:migrate",
     "db:deploy": "npm --prefix backend run db:deploy",
     "db:seed": "npm --prefix backend run db:seed",
     "dev:backend": "npm --prefix backend run dev",
-    "build": "npm --prefix backend run build",
-    "lint": "npm --prefix backend run lint",
-    "typecheck": "npm --prefix backend run typecheck",
-    "test": "npm --prefix backend test"
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "lint": "npm --prefix backend run lint && npm --prefix frontend run lint",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "test": "npm --prefix backend test && npm --prefix frontend test",
+    "test:backend": "npm --prefix backend test",
+    "test:frontend": "npm --prefix frontend test"
   }
 }

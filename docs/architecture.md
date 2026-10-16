@@ -8,6 +8,7 @@ updated at the end of each implementation phase.
 ```text
 React (Vite) ──HTTP/JSON──▶ Express API ──Prisma (pg adapter)──▶ PostgreSQL
    [Phase 5]                 [Phase 1]         [Phase 2]
+  frontend/                  backend/
 ```
 
 Monorepo with independent `backend/` and (later) `frontend/` packages, each with its
@@ -346,8 +347,91 @@ the delete gets 409".
     including the burst and interleaving tests.
   - The concurrency suite passed 10 of 10 consecutive runs.
 
+## Frontend (Phase 5)
+
+React 19 + TypeScript + Vite 8, React Router 8, Tailwind CSS 4. It is a separate
+package (`frontend/`) that talks to the API only over HTTP, using `VITE_API_BASE_URL`.
+
+```text
+frontend/src/
+├── main.tsx, App.tsx      Entry: <RouterProvider>
+├── app/router.tsx         Route table (shared by the app and the tests)
+├── features/
+│   ├── dashboard/         DashboardPage + dashboard.api.ts
+│   ├── public-booking/    BookingPage + booking.api.ts
+│   └── confirmation/      ConfirmationPage + confirmation.api.ts
+├── components/
+│   ├── layout/            AppLayout + Sidebar (host), PublicLayout (visitors), PageHeader
+│   ├── slots/             SlotList, CreateSlotDialog, DeleteSlotDialog
+│   ├── bookings/          BookingForm, UpcomingBookings
+│   ├── common/            LoadingState, ErrorState, EmptyState, ConfirmDialog
+│   └── ui/                Button, Field, Card, Alert, Badge, Dialog, Spinner
+├── lib/                   api-client, date-time, validation, error-messages, use-api-resource
+└── types/                 Slot / booking types mirroring the backend DTOs
+```
+
+### Routes
+| Path | Page | API calls |
+|---|---|---|
+| `/` | Redirects to `/book` | |
+| `/book` | Pick a day → free times → name/email form | `GET /slots?from=d&to=d&status=AVAILABLE`, `POST /bookings` |
+| `/booking/confirmation/:token` | Booking details + message | `GET /bookings/:token` |
+| `/dashboard` | Stats, 14-day slot list, create/delete slots, upcoming bookings | `GET /slots?from&to`, `POST /slots`, `DELETE /slots/:id`, `GET /bookings?upcoming=true` |
+
+### Decisions
+- **One API client** (`lib/api-client.ts`) implements the documented contract: it
+  unwraps `{ data }`, turns `{ error: { code, message, details } }` into a typed
+  `ApiError`, maps 204 to `undefined`, and adds client-side codes `NETWORK_ERROR`,
+  `TIMEOUT` (15 s) and `UNEXPECTED_RESPONSE`. Pages branch on `error.code`, never
+  on message text.
+- **Data loading** (`lib/use-api-resource.ts`) aborts superseded requests and ignores
+  their results, so quickly switching days can't show stale slots.
+- **Time zones.** All display uses `Intl.DateTimeFormat` with `timeZone:
+  'Europe/Skopje'`, independent of the browser's zone. The create-slot form turns the
+  Skopje wall-clock time into ISO 8601 with the correct offset using `@date-fns/tz`
+  (e.g. `+01:00` in winter, `+02:00` in summer), as the API requires.
+- **Booking page flows.**
+  - **Duplicate submissions:** the form ignores submits while one is in flight (a ref
+    guard plus a disabled button).
+  - **Slot taken:** on `SLOT_ALREADY_BOOKED`, `SLOT_NOT_AVAILABLE` or `SLOT_NOT_FOUND`,
+    the page clears the selection, explains what happened and reloads the free times.
+  - **Success:** it navigates to `/booking/confirmation/:token`.
+- **Refresh-safe confirmation.** The page loads everything from
+  `GET /api/bookings/:token` using only the URL, so it survives refreshes and shared
+  links. It distinguishes loading, invalid token (404), and network or server errors
+  (with retry).
+- **No fake success.** Every success message comes after a successful API response.
+  On failure the UI shows the error and keeps the user's input where useful.
+- **Client-side validation mirrors the backend rules** (name 1–100 characters, email
+  format and length, durations, future start). The backend stays authoritative, and
+  its 400 field details are shown on the form fields.
+- **Components.** The plan lists shadcn/ui. The shadcn CLI would generate code and add
+  Radix and other dependencies, so the few primitives needed (Button, Field, Card,
+  Alert, Badge, Dialog) are hand-written in the same style with Tailwind. The dialog
+  is accessible: `role="dialog"`, `aria-modal`, labelled, Escape to close, focus
+  moved inside and restored, and it can't be dismissed while a request is pending.
+- **Not created:** `SlotCalendar.tsx`, `SlotCard.tsx` and `BookingCard.tsx`. The
+  grouped-by-day list covers "list or calendar", and the plan says not to add unused
+  files. `lib/validation.ts`, `LoadingState`, `ErrorState`, `EmptyState` and
+  `ConfirmDialog` follow the plan.
+
+### Frontend tests
+Vitest + React Testing Library (jsdom). The tests render the **real route table and
+API client** and replace only `fetch`, so they also check the HTTP contract (method,
+path, query, JSON body). They cover:
+- the available-slot list and its query;
+- form validation;
+- loading, empty and error states with retry;
+- a successful booking and navigation to the confirmation page;
+- the 409 refresh-and-explain flow, rate limiting, and a single request on repeated clicks;
+- the confirmation page after a "refresh", with an invalid token, and with a network
+  error and retry;
+- the dashboard: stats, the Skopje offset on slot creation, overlap and delete conflicts.
+
+`src/test/api-contract.test.ts` is opt-in (`MENTORMEET_CONTRACT_TEST=1`). It runs the
+frontend's real API modules against a running backend and performs the whole flow.
+
 ## Planned (later phases)
 
-- **Phase 5:** React frontend (dashboard, booking page, confirmation page).
 - **Phase 6:** Gemini confirmation message with a timeout and fallback (backend only).
 - **Phases 7–8:** Final regression pass, E2E tests and deployment.

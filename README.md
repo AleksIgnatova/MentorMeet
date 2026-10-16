@@ -5,11 +5,11 @@ slots; visitors pick a free slot, enter their name and email, and receive a
 confirmation page. Bookings are stored in PostgreSQL, and a slot can never be
 booked twice.
 
-> **Status: Phase 4 of 8.** The backend foundation (Express + TypeScript, health
-> endpoint, middleware, error handling), the database layer (Prisma schema,
-> migration with integrity constraints, seed), the **Slots API** and the
-> **Bookings API** (atomic, concurrency-safe booking) exist. The frontend and AI
-> integration are not implemented yet. This README only documents what exists.
+> **Status: Phase 5 of 8.** The backend (Express + TypeScript, Prisma/PostgreSQL,
+> Slots API, concurrency-safe Bookings API) and the **React frontend** (host
+> dashboard, public booking page, confirmation page) exist. The optional AI
+> confirmation message is not implemented yet: the confirmation page shows a static
+> message. This README only documents what exists.
 
 ## Tech stack (current)
 
@@ -23,8 +23,11 @@ booked twice.
 | Rate limiting | express-rate-limit |
 | Tests | Jest 30 + ts-jest + Supertest |
 | Lint | ESLint 10 + typescript-eslint (type-checked rules) |
+| Frontend | React 19, TypeScript 5.9, Vite 8, React Router 8 |
+| Styling | Tailwind CSS 4 (shadcn/ui-style components, hand-written) |
+| Frontend tests | Vitest 5 + React Testing Library (jsdom) |
 
-Planned for later phases: React + Vite frontend, Vitest, Playwright, Gemini.
+Planned for later phases: Playwright E2E, Gemini.
 
 ## Repository layout
 
@@ -35,6 +38,12 @@ Planned for later phases: React + Vite frontend, Vitest, Playwright, Gemini.
 │   ├── prisma.config.ts     Prisma CLI configuration
 │   ├── src/                 Express API (see docs/architecture.md)
 │   └── tests/               Unit and integration tests
+├── frontend/
+│   ├── src/app/             Route table
+│   ├── src/features/        Pages: dashboard, public-booking, confirmation (+ their API calls)
+│   ├── src/components/      Layout, slots, bookings, common states, UI primitives
+│   ├── src/lib/             API client, Europe/Skopje date helpers, validation
+│   └── src/test/            Page tests and the opt-in API contract test
 ├── docker/postgres/init/    Creates the separate test database on first start
 ├── docs/                    architecture.md, api.md
 ├── docker-compose.yml       Local PostgreSQL
@@ -44,11 +53,13 @@ Planned for later phases: React + Vite frontend, Vitest, Playwright, Gemini.
 ## Getting started
 
 ```bash
-# 1. Install backend dependencies (also generates the Prisma client)
+# 1. Install dependencies (the backend install also generates the Prisma client)
 npm run install:backend
+npm run install:frontend
 
-# 2. Create the backend environment file and adjust it if needed
+# 2. Create the environment files and adjust them if needed
 cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 
 # 3. Start PostgreSQL (requires Docker). Creates the `mentormeet` and `mentormeet_test` databases.
 npm run db:up
@@ -64,7 +75,15 @@ npm run dev:backend
 
 # 7. Check that it is up
 curl http://localhost:3000/api/health
+
+# 8. In a second terminal, start the frontend on http://localhost:5173
+npm run dev:frontend
 ```
+
+Then open:
+- http://localhost:5173/book: public booking page (visitors)
+- http://localhost:5173/dashboard: host dashboard
+- http://localhost:5173/booking/confirmation/:token: confirmation page (linked after booking)
 
 To stop PostgreSQL, run `npm run db:down`. Your data stays in the Docker volume.
 `docker compose down -v` would **delete** all local data.
@@ -82,6 +101,12 @@ To stop PostgreSQL, run `npm run db:down`. Your data stays in the Docker volume.
 
 The server validates these at startup and exits with a clear error if any are invalid.
 Never commit `.env`: it is listed in `.gitignore`.
+
+### Environment variables (`frontend/.env`)
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_API_BASE_URL` | no (default `http://localhost:3000/api` in development) | Base URL of the API. It is embedded in the browser bundle, so never put secrets in `VITE_` variables. The backend's `FRONTEND_URL` must contain the frontend's origin (CORS). |
 
 Tests use `TEST_DATABASE_URL` (default
 `postgresql://postgres:postgres@localhost:5432/mentormeet_test?schema=public`) and
@@ -105,20 +130,34 @@ Root (`package.json`):
 
 | Command | Description |
 |---|---|
-| `npm run install:backend` | Install backend dependencies |
+| `npm run install:backend` / `install:frontend` | Install dependencies |
 | `npm run db:up` / `npm run db:down` | Start / stop local PostgreSQL |
 | `npm run db:migrate` | Create/apply migrations in development (`prisma migrate dev`) |
 | `npm run db:deploy` | Apply pending migrations (`prisma migrate deploy`) |
 | `npm run db:seed` | Insert sample time slots |
 | `npm run dev:backend` | Run the API with reload on change (tsx) |
-| `npm run build` | Generate the Prisma client and compile the backend to `backend/dist` |
-| `npm run typecheck` | Type-check backend sources and tests |
-| `npm run lint` | ESLint |
-| `npm test` | All backend tests (needs PostgreSQL running for the integration tests) |
+| `npm run dev:frontend` | Run the Vite dev server |
+| `npm run build` | Build the backend (`backend/dist`) and the frontend (`frontend/dist`) |
+| `npm run typecheck` | Type-check backend and frontend |
+| `npm run lint` | ESLint (backend and frontend) |
+| `npm test` | Backend tests (needs PostgreSQL running for the integration tests), then frontend tests |
+| `npm run test:backend` / `test:frontend` | One side only |
 
 Backend only (`backend/package.json`): `dev`, `build`, `start` (runs `dist/server.js`),
 `typecheck`, `lint`, `test`, `test:unit` (no database needed), `test:integration`,
 `test:watch`, `prisma:generate`, `db:migrate`, `db:deploy`, `db:status`, `db:seed`.
+
+Frontend only (`frontend/package.json`): `dev`, `build`, `preview`, `typecheck`, `lint`,
+`test`, `test:watch`, and `test:contract`. `test:contract` is an opt-in test that runs
+the frontend's API modules against a **running backend** and creates data, so point
+that backend at the test database:
+
+```bash
+# Backend on the test DB (the contract test runs in Node, so CORS does not apply)
+(cd backend && DATABASE_URL="postgresql://postgres:postgres@localhost:5432/mentormeet_test?schema=public" PORT=3999 npm run dev)
+# Then
+(cd frontend && MENTORMEET_CONTRACT_TEST=1 VITE_API_BASE_URL=http://localhost:3999/api npm run test:contract)
+```
 
 ## API
 
@@ -138,7 +177,9 @@ For request and response formats, validation rules and error codes, see
 
 ## Known limitations (at this phase)
 
-- No frontend or AI integration yet.
+- No AI integration yet: the confirmation page shows a static message.
+- The dashboard at `/dashboard` is public as well (see below). It is not linked from the
+  visitor pages, but anyone who knows the URL can open it.
 - **No authentication, by design.** The project brief explicitly says user
   authentication is not required, so there are no accounts, logins or tokens for the
   host. As a result, **anyone who can reach the API can create and delete slots and
