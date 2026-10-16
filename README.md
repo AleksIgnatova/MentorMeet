@@ -123,8 +123,8 @@ I used **Claude Code** (Anthropic) as an AI-assisted development tool.
   manually in the browser, and made the product and design decisions. For example, I
   decided to save AI messages so they stay the same after a refresh, and to make the
   dashboard the start page.
-- Claude Code was used throughout the project, for all eight commits; the first five
-  also carry a `Co-Authored-By` line.
+- Claude Code was used throughout the project. The first five commits also carry a
+  `Co-Authored-By` line.
 
 Separately, the application itself uses the **Gemini API** to generate the optional
 confirmation message.
