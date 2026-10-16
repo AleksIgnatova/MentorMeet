@@ -6,6 +6,8 @@
 //   - time_slots_no_overlap         EXCLUDE USING gist on tstzrange(start_time, end_time, '[)')
 //                                   for slots that are not CANCELLED
 //   - bookings_name_not_blank / bookings_email_not_blank / bookings_token_min_length
+// and in *_add_booking_ai_confirmation_message:
+//   - bookings_ai_message_not_blank  CHECK (NULL or not blank)
 // See docs/architecture.md for the reasoning.
 
 generator client {
@@ -53,16 +55,19 @@ model TimeSlot {
 }
 
 model Booking {
-  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id                    String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   /// UNIQUE: a time slot can have at most one booking.
-  timeSlotId        String        @unique @map("time_slot_id") @db.Uuid
-  name              String        @db.VarChar(100)
-  email             String        @db.VarChar(254)
-  status            BookingStatus @default(CONFIRMED)
+  timeSlotId            String        @unique @map("time_slot_id") @db.Uuid
+  name                  String        @db.VarChar(100)
+  email                 String        @db.VarChar(254)
+  status                BookingStatus @default(CONFIRMED)
   /// Cryptographically random, hard-to-guess token for the public confirmation page.
-  confirmationToken String        @unique @map("confirmation_token") @db.VarChar(128)
-  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt         DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  confirmationToken     String        @unique @map("confirmation_token") @db.VarChar(128)
+  /// Gemini confirmation message (plain text, max 600 characters). NULL until the first
+  /// successful generation; written once, and never with the fallback message.
+  aiConfirmationMessage String?       @map("ai_confirmation_message") @db.VarChar(600)
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   /// RESTRICT: a slot that has a booking cannot be deleted.
   timeSlot TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Restrict, onUpdate: Cascade)

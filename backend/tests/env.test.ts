@@ -1,4 +1,4 @@
-import { EnvValidationError, parseEnv } from '../src/config/env';
+import { DEFAULT_GEMINI_MODEL, EnvValidationError, parseEnv } from '../src/config/env';
 
 const valid = {
   NODE_ENV: 'production',
@@ -19,6 +19,7 @@ describe('parseEnv', () => {
       databaseUrl: valid.DATABASE_URL,
       corsOrigins: ['https://mentormeet.example.com', 'https://preview.example.com'],
       geminiApiKey: undefined,
+      geminiModel: 'gemini-3.5-flash-lite',
       trustProxy: 1,
     });
   });
@@ -32,6 +33,13 @@ describe('parseEnv', () => {
     expect(config.port).toBe(3000);
     expect(config.trustProxy).toBe(0);
     expect(config.geminiApiKey).toBeUndefined();
+    expect(config.geminiModel).toBe(DEFAULT_GEMINI_MODEL);
+  });
+
+  it('reads the Gemini settings, trimming the key', () => {
+    const config = parseEnv({ ...valid, GEMINI_API_KEY: '  test-key  ', GEMINI_MODEL: 'gemini-3.8-flash' });
+    expect(config.geminiApiKey).toBe('test-key');
+    expect(config.geminiModel).toBe('gemini-3.8-flash');
   });
 
   it('rejects missing required variables', () => {
@@ -51,6 +59,7 @@ describe('parseEnv', () => {
     ['out-of-range PORT', { PORT: '70000' }],
     ['invalid NODE_ENV', { NODE_ENV: 'staging' }],
     ['non-URL FRONTEND_URL', { FRONTEND_URL: 'not a url' }],
+    ['GEMINI_MODEL with path characters', { GEMINI_MODEL: '../models/x:generateContent?key=1' }],
   ])('rejects %s', (_label, override) => {
     expect(() => parseEnv({ ...valid, ...override })).toThrow(EnvValidationError);
   });

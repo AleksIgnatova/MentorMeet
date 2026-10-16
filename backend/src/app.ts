@@ -5,6 +5,9 @@ import type { PrismaClient } from './generated/prisma/client';
 import { createErrorHandler } from './middleware/error-handler';
 import { notFoundHandler } from './middleware/not-found';
 import { createRateLimiter, type RateLimitOptions } from './middleware/rate-limit';
+import { createAiRouter } from './modules/ai/ai.routes';
+import { createAiService } from './modules/ai/ai.service';
+import { createGeminiClient, type TextGenerator } from './modules/ai/gemini.client';
 import { createBookingsRouter } from './modules/bookings/bookings.routes';
 import { createBookingsService } from './modules/bookings/bookings.service';
 import { healthRouter } from './modules/health/health.routes';
@@ -16,12 +19,22 @@ export const JSON_BODY_LIMIT = '10kb';
 const DEFAULT_API_RATE_LIMIT: RateLimitOptions = { windowMs: 15 * 60 * 1000, limit: 300 };
 /** Stricter limit for creating bookings (public write endpoint), per IP. */
 const DEFAULT_BOOKING_RATE_LIMIT: RateLimitOptions = { windowMs: 15 * 60 * 1000, limit: 20 };
+/** AI confirmation messages, per IP. Each call may be a paid provider request. */
+const DEFAULT_AI_RATE_LIMIT: RateLimitOptions = { windowMs: 15 * 60 * 1000, limit: 30 };
 
 export type CreateAppOptions = {
   /** Database client. Injected so tests can use the test database. */
   prisma: PrismaClient;
   apiRateLimit?: RateLimitOptions;
   bookingRateLimit?: RateLimitOptions;
+  aiRateLimit?: RateLimitOptions;
+  /**
+   * AI text generator. Defaults to Gemini when GEMINI_API_KEY is set, otherwise
+   * none (fallback messages only). Injected by tests so they never call the provider.
+   */
+  generateText?: TextGenerator;
+  aiTimeoutMs?: number;
+  aiRetryDelayMs?: number;
   /** Injectable clock for tests. */
   now?: () => Date;
   /** Injectable confirmation-token source for tests. */
@@ -47,14 +60,32 @@ export function createApp(config: AppConfig, options: CreateAppOptions): Express
 
   app.use('/api', createRateLimiter(options.apiRateLimit ?? DEFAULT_API_RATE_LIMIT));
   app.use('/api/slots', createSlotsRouter(createSlotsService(options)));
+  const bookingsService = createBookingsService(options);
   app.use(
     '/api/bookings',
     createBookingsRouter(
-      createBookingsService(options),
+      bookingsService,
       createRateLimiter(options.bookingRateLimit ?? DEFAULT_BOOKING_RATE_LIMIT),
     ),
   );
-  // The AI router is mounted here in a later phase.
+  const generateText =
+    'generateText' in options
+      ? options.generateText
+      : config.geminiApiKey
+        ? createGeminiClient({ apiKey: config.geminiApiKey, model: config.geminiModel })
+        : undefined;
+  app.use(
+    '/api/ai',
+    createAiRouter(
+      createAiService({
+        prisma: options.prisma,
+        generateText,
+        timeoutMs: options.aiTimeoutMs,
+        retryDelayMs: options.aiRetryDelayMs,
+      }),
+      createRateLimiter(options.aiRateLimit ?? DEFAULT_AI_RATE_LIMIT),
+    ),
+  );
 
   app.use(notFoundHandler);
   app.use(createErrorHandler({ exposeStack: config.nodeEnv === 'development' }));

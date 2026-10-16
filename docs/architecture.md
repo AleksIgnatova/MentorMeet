@@ -37,10 +37,11 @@ backend/src/
 └── modules/
     ├── health/            GET /api/health
     ├── slots/             /api/slots: routes, controller, service, schemas, types
-    └── bookings/          /api/bookings: routes, controller, service, schemas, types
+    ├── bookings/          /api/bookings: routes, controller, service, schemas, types
+    └── ai/                /api/ai: routes, controller, service, schemas, Gemini REST client
 ```
 
-Feature modules (`slots`, `bookings`, `ai`) will each follow
+Feature modules (`slots`, `bookings`, `ai`) each follow
 `*.routes.ts → *.controller.ts (thin) → *.service.ts (business logic) → Prisma`,
 with Zod schemas in `*.schemas.ts`.
 
@@ -49,9 +50,10 @@ with Zod schemas in `*.schemas.ts`.
 1. `cors({ origin: FRONTEND_URL list })`. Other origins get no CORS headers, so browsers block them.
 2. `express.json({ limit: '10kb' })`
 3. `/api/health`: mounted **before** the rate limiter so uptime probes are never throttled.
-4. `/api` rate limiter: 300 requests / 15 min per IP by default. Stricter per-route limiters for booking and AI endpoints come in later phases.
-5. Feature routers: `/api/slots`, `/api/bookings`. `POST /api/bookings` has its
-   own stricter rate limiter (20 / 15 min / IP). The AI router comes in a later phase.
+4. `/api` rate limiter: 300 requests / 15 min per IP by default.
+5. Feature routers: `/api/slots`, `/api/bookings`, `/api/ai`. `POST /api/bookings` has
+   its own stricter rate limiter (20 / 15 min / IP), and `POST /api/ai/confirmation`
+   one of 30 / 15 min / IP.
 6. `notFoundHandler` → `ROUTE_NOT_FOUND`.
 7. `createErrorHandler`.
 
@@ -121,7 +123,8 @@ default AVAILABLE), `created_at`/`updated_at` `timestamptz(3)`.
 `bookings`: `id` uuid PK, `time_slot_id` uuid **UNIQUE** FK → `time_slots.id`,
 `name` varchar(100), `email` varchar(254), `status` enum `booking_status`
 (CONFIRMED | CANCELLED, default CONFIRMED), `confirmation_token` varchar(128)
-**UNIQUE**, `created_at`/`updated_at`.
+**UNIQUE**, `ai_confirmation_message` varchar(600) NULL (Phase 6; see below),
+`created_at`/`updated_at`.
 
 Models are `TimeSlot`/`Booking` in Prisma and map to snake_case tables and columns.
 This keeps the hand-written SQL (constraints now, the atomic booking `UPDATE` in
@@ -143,6 +146,7 @@ client only. Raw SQL updates in later phases must set `updated_at` explicitly.
 | `time_slots_no_overlap` | EXCLUDE USING gist | No two **non-cancelled** slots overlap |
 | `bookings_name_not_blank`, `bookings_email_not_blank` | CHECK | Defence in depth; the API validates fully |
 | `bookings_token_min_length` | CHECK | Token is at least 32 characters |
+| `bookings_ai_message_not_blank` | CHECK | A stored AI message is NULL or not blank (migration `*_add_booking_ai_confirmation_message`) |
 
 Indexes: `(status, start_time)` for the public "available slots in range" query and
 `(start_time)` for the host dashboard. The GiST index behind the exclusion
@@ -375,7 +379,7 @@ frontend/src/
 |---|---|---|
 | `/` | Redirects to `/book` | |
 | `/book` | Pick a day → free times → name/email form | `GET /slots?from=d&to=d&status=AVAILABLE`, `POST /bookings` |
-| `/booking/confirmation/:token` | Booking details + message | `GET /bookings/:token` |
+| `/booking/confirmation/:token` | Booking details + message | `GET /bookings/:token`, then `POST /ai/confirmation` |
 | `/dashboard` | Stats, 14-day slot list, create/delete slots, upcoming bookings | `GET /slots?from&to`, `POST /slots`, `DELETE /slots/:id`, `GET /bookings?upcoming=true` |
 
 ### Decisions
@@ -426,12 +430,108 @@ path, query, JSON body). They cover:
 - the 409 refresh-and-explain flow, rate limiting, and a single request on repeated clicks;
 - the confirmation page after a "refresh", with an invalid token, and with a network
   error and retry;
+- the personal message: AI text, the backend's fallback, details shown while it
+  loads, the static fallback on 500/429/network errors or an unusable response, and
+  no request for a cancelled booking;
 - the dashboard: stats, the Skopje offset on slot creation, overlap and delete conflicts.
 
 `src/test/api-contract.test.ts` is opt-in (`MENTORMEET_CONTRACT_TEST=1`). It runs the
 frontend's real API modules against a running backend and performs the whole flow.
 
+## AI confirmation message (Phase 6)
+
+`POST /api/ai/confirmation { token }` returns `{ data: { message, source } }`, where
+`source` is `ai` or `fallback`.
+
+```text
+ai.routes (30/15 min limiter) → ai.controller (Zod: { token }) → ai.service
+   ├─ booking by token                  same 404 as GET /api/bookings/:token
+   ├─ not CONFIRMED                     → fallback, provider not called
+   ├─ ai_confirmation_message stored    → return it (provider not called)
+   ├─ no key                            → fallback
+   └─ generation in flight for booking? → share it; otherwise:
+        gemini.client (fetch) ── 12 s budget, ≤ 1 retry on 429/5xx/network ──→ sanitize
+          → UPDATE … SET message WHERE id = ? AND message IS NULL AND CONFIRMED
+          → read back the stored message → { source: 'ai' }
+        any failure → log reason category → fallback (200), nothing stored
+```
+
+### Decisions
+- **The booking never depends on AI.** The message is a separate request made by the
+  confirmation page after the booking has been saved and loaded, never part of the
+  booking transaction. It only ever writes `ai_confirmation_message`: booking status
+  and slot are never changed. Every provider failure becomes the fallback message
+  with HTTP 200, so the page never shows an error for it.
+- **Stored once, generated lazily.** Without storage, every page load called Gemini
+  again, so a refresh could turn a good message into the fallback whenever Gemini was
+  briefly unavailable (measured: about 1 in 5 calls failed with HTTP 503 or a timeout).
+  Now the first successful message is stored in `bookings.ai_confirmation_message` and
+  returned as is from then on. The fallback is never stored, so it can still be
+  replaced by an AI message on a later load. This column is not in the plan's
+  original `Booking` field list. It was added in Phase 6 with approval, using a separate
+  migration (no data rewrite: nullable, no default).
+- **Concurrency.** The message is stored with one conditional `UPDATE … WHERE
+  ai_confirmation_message IS NULL` (Prisma `updateMany`). PostgreSQL row-locks the
+  booking, so of several concurrent writers exactly one updates a row, and the others
+  match none. Every request then reads back the stored message, which never changes
+  once set. Within one server, simultaneous requests for the same booking (e.g. React
+  StrictMode's double effect in development) also share a single in-flight provider
+  call, so Gemini is not asked twice.
+- **Real data, minimal data.** The client sends only the token. The prompt is built
+  from the stored booking: the name, date and time in Europe/Skopje, and the
+  duration. The email, token and IDs are never sent to Gemini.
+- **No SDK.** `gemini.client.ts` calls the `generateContent` REST endpoint with the
+  built-in `fetch`, so no dependency is added. The key is sent in the
+  `x-goog-api-key` header, not the URL. `GEMINI_MODEL` is validated as a plain model ID
+  because it becomes part of the URL path.
+- **Timeout and retry.** One 12 s budget covers the whole generation, so it stays
+  under the frontend's 15 s request timeout (successful calls took 3–7 s). When the
+  budget runs out, the shared abort signal cancels the provider request, and the
+  service stops waiting even if the provider ignores the signal. A temporary failure
+  (HTTP 429/500/502/503/504 or a network error) is retried **once** after 500 ms,
+  but only if at least 2 s of the budget remain. Permanent errors (e.g. 400/401/403 for
+  a bad key or 404 for an unknown model), timeouts, and blocked, truncated or empty
+  output are not retried.
+- **Length and format.** `maxOutputTokens: 512` at the provider. Then the service strips
+  control characters and stray markdown, collapses whitespace, and caps the message
+  at 600 characters (cut at a sentence end where possible). Responses that were
+  blocked, cut off by the token limit (`MAX_TOKENS`), or are empty or malformed fall
+  back.
+- **Prompt injection.** The name is placed in a JSON data block, and the system
+  instruction says the data is not instructions. The output is plain text, rendered
+  by React as text (no HTML). The remaining risk is limited to the visitor's own
+  confirmation page.
+- **Logging.** One line per retry and per fallback, with the failure category and,
+  for HTTP errors, the status (e.g. `[ai] Confirmation message unavailable
+  (http_error (HTTP 503)); using the fallback message`).
+  Provider bodies, prompts, names, emails, tokens and keys are never logged or
+  returned.
+- **Frontend.** The booking details render as soon as `GET /bookings/:token`
+  succeeds. The message area shows "Preparing your personal message…" while
+  waiting, then the message. If the request fails, or the response has no usable
+  message, the page shows its own static message. Cancelled bookings get no
+  message request.
+
+### Tests
+- `tests/gemini.client.test.ts`: request shape (URL, key header, body), joining parts
+  and skipping thought parts, HTTP errors, network errors, abort/timeout, malformed
+  bodies, blocked or truncated responses, empty responses.
+- `tests/ai.service.test.ts` (no database): the generation pipeline. Success, one
+  retry on 429/500/502/503/504/network, no second retry, no retry on
+  400/401/403/404, blocked, truncated, malformed or unexpected errors, a timeout
+  that aborts the provider, a retry that stays within the same budget, skipping the
+  retry when too little budget is left, unusable or over-long output, prompt
+  content, sanitizing, and logs without names or provider text.
+- `tests/ai.integration.test.ts` (test database): fallback without a key (nothing
+  stored), AI path with a fake provider (prompt has no email or token), storing the
+  message and returning it on refresh without a new provider call, a stored message
+  served without a key, a fallback that is not stored and later replaced by an AI
+  message, a retry within one request, cancelled bookings, five simultaneous
+  requests sharing one provider call, three "servers" racing so exactly one message
+  is stored and all return it, the booking unchanged after failures, timeout, 404,
+  400, the rate limit.
+- No test calls the real Gemini API. `tests/setup.ts` clears `GEMINI_API_KEY`.
+
 ## Planned (later phases)
 
-- **Phase 6:** Gemini confirmation message with a timeout and fallback (backend only).
 - **Phases 7–8:** Final regression pass, E2E tests and deployment.

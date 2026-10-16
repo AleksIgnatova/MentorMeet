@@ -12,6 +12,12 @@ export type BookingConfirmation = {
   slot: SessionTimes;
 };
 
+/** `POST /api/ai/confirmation`: the AI message, or the backend's prepared fallback. */
+export type ConfirmationMessage = {
+  message: string;
+  source: 'ai' | 'fallback';
+};
+
 /** `POST /api/bookings` response. */
 export type CreatedBooking = BookingConfirmation & { confirmationToken: string };
 

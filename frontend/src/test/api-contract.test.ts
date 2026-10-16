@@ -8,7 +8,7 @@
  *   MENTORMEET_CONTRACT_TEST=1 VITE_API_BASE_URL=http://localhost:3999/api npm run test:contract
  */
 import { describe, expect, it } from 'vitest';
-import { getConfirmation } from '../features/confirmation/confirmation.api';
+import { getConfirmation, getConfirmationMessage } from '../features/confirmation/confirmation.api';
 import { createSlot, deleteSlot, listSlots, listUpcomingBookings } from '../features/dashboard/dashboard.api';
 import { createBooking, listAvailableSlots } from '../features/public-booking/booking.api';
 import { API_BASE_URL } from '../lib/api-client';
@@ -65,6 +65,15 @@ describe.skipIf(!enabled)(`API contract against ${API_BASE_URL}`, () => {
       code: 'BOOKING_NOT_FOUND',
     });
 
+    // Confirmation message: AI text if the backend has GEMINI_API_KEY, otherwise its fallback.
+    const message = await getConfirmationMessage(booking.confirmationToken);
+    expect(['ai', 'fallback']).toContain(message.source);
+    expect(message.message.length).toBeGreaterThan(0);
+    await expect(getConfirmationMessage('not-a-real-token')).rejects.toMatchObject({
+      status: 404,
+      code: 'BOOKING_NOT_FOUND',
+    });
+
     // Dashboard: upcoming bookings include it; a booked slot cannot be deleted.
     const upcoming = await listUpcomingBookings();
     expect(upcoming.find((b) => b.slot.id === slot.id)).toMatchObject({
@@ -80,5 +89,5 @@ describe.skipIf(!enabled)(`API contract against ${API_BASE_URL}`, () => {
       durationMinutes: 15,
     });
     await expect(deleteSlot(other.id)).resolves.toBeUndefined();
-  });
+  }, 30_000); // With a real GEMINI_API_KEY the message step alone may take up to the backend's 12 s budget.
 });

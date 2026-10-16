@@ -2,14 +2,15 @@ import { Link, useParams } from 'react-router';
 import { ErrorState } from '../../components/common/ErrorState';
 import { LoadingState } from '../../components/common/LoadingState';
 import { Card } from '../../components/ui/Card';
+import { Spinner } from '../../components/ui/Spinner';
 import { isApiError } from '../../lib/api-client';
 import { formatLongDate, formatTimeRange } from '../../lib/date-time';
 import { describeError } from '../../lib/error-messages';
 import { useApiResource } from '../../lib/use-api-resource';
 import type { BookingConfirmation } from '../../types/booking';
-import { getConfirmation } from './confirmation.api';
+import { getConfirmation, getConfirmationMessage } from './confirmation.api';
 
-/** Static message until the optional AI-generated message is added (Phase 6). */
+/** Shown when the message endpoint cannot be reached; the backend has its own fallback too. */
 const fallbackMessage = (name: string) =>
   `Thank you, ${name}! Your mentoring session is confirmed. Come with a question or topic in mind, and you'll get the most out of your time together.`;
 
@@ -22,7 +23,28 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ConfirmationDetails({ booking }: { booking: BookingConfirmation }) {
+/**
+ * The personal (AI) message is loaded separately from the booking, so the booking
+ * details never wait for it, and any failure just shows the static fallback.
+ */
+function ConfirmationMessage({ token, name }: { token: string; name: string }) {
+  const message = useApiResource((signal) => getConfirmationMessage(token, signal), [token]);
+
+  return (
+    <div aria-live="polite" aria-busy={message.status === 'loading'}>
+      {message.status === 'loading' && (
+        <p className="flex items-center gap-2 text-sm text-slate-500">
+          <Spinner className="text-brand-600" />
+          Preparing your personal message…
+        </p>
+      )}
+      {message.status === 'success' && <p className="text-slate-700">{message.data.message}</p>}
+      {message.status === 'error' && <p className="text-slate-700">{fallbackMessage(name)}</p>}
+    </div>
+  );
+}
+
+function ConfirmationDetails({ token, booking }: { token: string; booking: BookingConfirmation }) {
   const { slot } = booking;
   return (
     <Card className="overflow-hidden">
@@ -39,7 +61,7 @@ function ConfirmationDetails({ booking }: { booking: BookingConfirmation }) {
         <Detail label="Duration" value={`${slot.durationMinutes} minutes`} />
       </dl>
       <div className="border-t border-slate-100 px-6 py-5">
-        <p className="text-slate-700">{fallbackMessage(booking.name)}</p>
+        {booking.status === 'CONFIRMED' && <ConfirmationMessage token={token} name={booking.name} />}
         <p className="mt-4 text-sm text-slate-500">
           Bookmark this page: it shows your booking details at any time.
         </p>
@@ -74,7 +96,7 @@ export function ConfirmationPage() {
           </Card>
         ))}
 
-      {booking.status === 'success' && <ConfirmationDetails booking={booking.data} />}
+      {booking.status === 'success' && <ConfirmationDetails token={token} booking={booking.data} />}
 
       <p className="text-center text-sm">
         <Link to="/book" className="font-medium text-brand-700 hover:text-brand-800">

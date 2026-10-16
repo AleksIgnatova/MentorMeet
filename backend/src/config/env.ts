@@ -5,6 +5,9 @@ import { z } from 'zod';
 const emptyToUndefined = (value: unknown) =>
   typeof value === 'string' && value.trim() === '' ? undefined : value;
 
+/** Stable, low-cost Gemini model used when GEMINI_MODEL is not set. */
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -20,7 +23,15 @@ const envSchema = z.object({
         .filter(Boolean),
     )
     .pipe(z.array(z.url({ protocol: /^https?$/ })).min(1, 'FRONTEND_URL must contain an origin')),
-  GEMINI_API_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  GEMINI_API_KEY: z.preprocess(emptyToUndefined, z.string().trim().optional()),
+  // Becomes part of the provider URL path, so only plain model IDs are accepted.
+  GEMINI_MODEL: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9.-]{0,63}$/, 'GEMINI_MODEL must be a model ID such as gemini-3.5-flash-lite')
+      .default(DEFAULT_GEMINI_MODEL),
+  ),
   TRUST_PROXY: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).default(0)),
 });
 
@@ -31,6 +42,7 @@ export type AppConfig = {
   databaseUrl: string;
   corsOrigins: string[];
   geminiApiKey: string | undefined;
+  geminiModel: string;
   trustProxy: number;
 };
 
@@ -61,6 +73,7 @@ export function parseEnv(source: NodeJS.ProcessEnv): AppConfig {
     databaseUrl: env.DATABASE_URL,
     corsOrigins: env.FRONTEND_URL,
     geminiApiKey: env.GEMINI_API_KEY,
+    geminiModel: env.GEMINI_MODEL,
     trustProxy: env.TRUST_PROXY,
   });
 }

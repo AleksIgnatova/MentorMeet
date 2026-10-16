@@ -64,7 +64,8 @@ not on `message`.
 ### Rate limiting
 All `/api/*` routes except `/api/health` share a per-IP limit of 300 requests per
 15 minutes. `POST /api/bookings` additionally has a stricter per-IP limit of 20
-requests per 15 minutes.
+requests per 15 minutes, and `POST /api/ai/confirmation` one of 30 requests per
+15 minutes.
 
 ### The slot object
 
@@ -266,3 +267,52 @@ but never confirmation tokens. Responses carry `Cache-Control: no-store`.
 |---|---|
 | 200 OK | See above (possibly an empty list) |
 | 400 | `VALIDATION_ERROR` (invalid `upcoming`) |
+
+### `POST /api/ai/confirmation` (public)
+
+The personal message for the confirmation page. The backend loads the booking by
+token from the database and builds the message from the stored data. The client
+sends only the token.
+
+- The first successful AI message for a booking is **stored**, and every later request
+  (for example a page refresh) returns that same message without calling Gemini again.
+- If no Gemini API key is configured, or Gemini fails, times out (12 s in total,
+  including one retry of a temporary failure such as HTTP 503/429 or a network
+  error), is blocked or returns nothing usable, the response is still **200** with
+  the prepared fallback message. The fallback is **not** stored, so a later request
+  tries again.
+- Concurrent requests for the same booking all get the one stored message.
+- The booking's status and slot are never changed. Responses carry
+  `Cache-Control: no-store`.
+
+**Request**
+
+```json
+{ "token": "Jx3…(43 characters)" }
+```
+
+| Field | Rules |
+|---|---|
+| `token` | Required string (at most 100 characters). Any other field is rejected (400). |
+
+**200 OK**
+
+```json
+{
+  "data": {
+    "message": "Thank you, Ana! Your 30-minute mentoring session on Wednesday, 21 October 2026 at 14:00 is booked. …",
+    "source": "ai"
+  }
+}
+```
+
+`source` is `ai` for a Gemini message and `fallback` for the prepared one. `message`
+is plain text (no HTML or markdown), at most 600 characters. Provider errors are
+never passed to the client.
+
+| Status | Body |
+|---|---|
+| 200 OK | See above (AI or fallback message) |
+| 400 | `VALIDATION_ERROR` (missing, non-string or extra fields) |
+| 404 | `BOOKING_NOT_FOUND`, for both unknown and malformed tokens |
+| 429 | `RATE_LIMITED` |

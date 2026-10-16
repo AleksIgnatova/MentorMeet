@@ -5,11 +5,11 @@ slots; visitors pick a free slot, enter their name and email, and receive a
 confirmation page. Bookings are stored in PostgreSQL, and a slot can never be
 booked twice.
 
-> **Status: Phase 5 of 8.** The backend (Express + TypeScript, Prisma/PostgreSQL,
-> Slots API, concurrency-safe Bookings API) and the **React frontend** (host
-> dashboard, public booking page, confirmation page) exist. The optional AI
-> confirmation message is not implemented yet: the confirmation page shows a static
-> message. This README only documents what exists.
+> **Status: Phase 6 of 8.** The backend (Express + TypeScript, Prisma/PostgreSQL,
+> Slots API, concurrency-safe Bookings API), the **React frontend** (host
+> dashboard, public booking page, confirmation page) and the optional **Gemini
+> confirmation message** (with a fallback when AI is unavailable) exist. This README
+> only documents what exists.
 
 ## Tech stack (current)
 
@@ -26,8 +26,9 @@ booked twice.
 | Frontend | React 19, TypeScript 5.9, Vite 8, React Router 8 |
 | Styling | Tailwind CSS 4 (shadcn/ui-style components, hand-written) |
 | Frontend tests | Vitest 5 + React Testing Library (jsdom) |
+| AI (optional) | Gemini API (`generateContent` REST, called from the backend with `fetch`; no SDK) |
 
-Planned for later phases: Playwright E2E, Gemini.
+Planned for later phases: Playwright E2E.
 
 ## Repository layout
 
@@ -96,7 +97,8 @@ To stop PostgreSQL, run `npm run db:down`. Your data stays in the Docker volume.
 | `PORT` | no (default `3000`) | HTTP port. |
 | `DATABASE_URL` | yes | `postgresql://` connection string. Also used by the Prisma CLI. |
 | `FRONTEND_URL` | yes | Allowed CORS origin(s), comma-separated. |
-| `GEMINI_API_KEY` | no | Backend only. Not used until Phase 6. |
+| `GEMINI_API_KEY` | no | Backend only. Enables the AI confirmation message. Empty: the fallback message is used. |
+| `GEMINI_MODEL` | no (default `gemini-3.5-flash-lite`) | Gemini model ID. |
 | `TRUST_PROXY` | no (default `0`) | Number of reverse proxies in front of the API, so rate limiting sees real client IPs. |
 
 The server validates these at startup and exits with a clear error if any are invalid.
@@ -107,6 +109,25 @@ Never commit `.env`: it is listed in `.gitignore`.
 | Variable | Required | Description |
 |---|---|---|
 | `VITE_API_BASE_URL` | no (default `http://localhost:3000/api` in development) | Base URL of the API. It is embedded in the browser bundle, so never put secrets in `VITE_` variables. The backend's `FRONTEND_URL` must contain the frontend's origin (CORS). |
+
+### Optional: AI confirmation message (Gemini)
+
+Without a key, everything works and the confirmation page shows a prepared fallback
+message. To try the real AI message locally:
+
+1. Create a key in [Google AI Studio](https://aistudio.google.com/apikey).
+2. Open `backend/.env` in your editor and set `GEMINI_API_KEY=` to the key. Do not
+   put it in `.env.example`, in a `VITE_` variable, in a shell command that is saved
+   to your history, or in a chat.
+3. Restart the backend (`npm run dev:backend`), book a slot, and open the
+   confirmation page. The API response's `source` is `ai` when Gemini answered and
+   `fallback` otherwise. The backend logs a one-line reason (e.g. `http_error (HTTP 403)`)
+   when it falls back. Once a booking has an AI message it is stored, and refreshing
+   the page shows the same message. A fallback is not stored, so the next page load
+   tries again.
+
+The automated tests never call Gemini: they inject a fake provider and clear
+`GEMINI_API_KEY`.
 
 Tests use `TEST_DATABASE_URL` (default
 `postgresql://postgres:postgres@localhost:5432/mentormeet_test?schema=public`) and
@@ -171,13 +192,24 @@ that backend at the test database:
 | `POST` | `/api/bookings` | Book a slot (public) |
 | `GET` | `/api/bookings/:token` | Booking confirmation by token (public) |
 | `GET` | `/api/bookings[?upcoming=true]` | List bookings (host dashboard) |
+| `POST` | `/api/ai/confirmation` | Personal confirmation message for a booking token, or the fallback (public) |
 
 For request and response formats, validation rules and error codes, see
 [docs/api.md](docs/api.md).
 
 ## Known limitations (at this phase)
 
-- No AI integration yet: the confirmation page shows a static message.
+- Gemini sometimes answers slowly or with HTTP 503 ("overloaded"); in a manual check,
+  about 1 in 5 calls failed that way. The backend retries a temporary failure once
+  within a 12 s budget and otherwise shows the fallback. Only a successful message is
+  stored, so a page showing the fallback gets the AI message on a later load.
+  Message requests are rate limited (30 / 15 min / IP).
+- With a key configured, the visitor's **name** and the session date/time are sent to
+  Google's Gemini API (never the email or token). A public deployment should mention
+  this in its privacy notice.
+- The name is user input. The prompt marks it as data and the output is sanitized
+  and rendered as plain text, but prompt injection can't be ruled out completely: a
+  visitor can at most influence the message shown on their own confirmation page.
 - The dashboard at `/dashboard` is public as well (see below). It is not linked from the
   visitor pages, but anyone who knows the URL can open it.
 - **No authentication, by design.** The project brief explicitly says user
